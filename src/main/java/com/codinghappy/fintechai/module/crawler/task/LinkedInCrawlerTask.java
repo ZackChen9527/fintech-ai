@@ -2,7 +2,7 @@ package com.codinghappy.fintechai.module.crawler.task;
 
 import com.codinghappy.fintechai.common.util.JsonUtil;
 import com.codinghappy.fintechai.module.crawler.dto.CompanyProfileDTO;
-import com.codinghappy.fintechai.module.crawler.service.LinkedInCrawlerService;
+import com.codinghappy.fintechai.module.crawler.service.CrawlerService;
 import com.codinghappy.fintechai.repository.CompanyRepository;
 import com.codinghappy.fintechai.repository.entity.CompanyEntity;
 import lombok.extern.slf4j.Slf4j;
@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class LinkedInCrawlerTask {
 
     @Autowired
-    private LinkedInCrawlerService linkedInCrawlerService;
+    private CrawlerService linkedInCrawlerService;
 
     @Autowired
     private CompanyRepository companyRepository;

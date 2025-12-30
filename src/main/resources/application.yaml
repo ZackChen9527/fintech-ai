@@ -76,7 +76,7 @@ spring:
   # Spring AI DeepSeek配置
   ai:
     openai:
-      api-key: ${DEEPSEEK_API_KEY:sk-1296b28ec3a14b74a574aa8fa450cc47}
+      api-key: ${DEEPSEEK_API_KEY:sk-1296b***********************cc47}
       base-url: https://api.deepseek.com
       chat:
         options:
@@ -109,6 +109,9 @@ spring:
       indent-output: false
     deserialization:
       fail-on-unknown-properties: false
+
+serper:
+  api-key: af8cd51f7b0760c2d3642f8ef944d5c505693fe5
 
 # 自定义配置
 finance:
@@ -158,10 +161,9 @@ finance:
 
     # 限流配置
     rate-limit:
-      tokens-per-second: 5
+      tokens-per-second: 5   # 每秒 5 个足够了，DeepSeek 也会限制你
       burst-capacity: 10
-      timeout-millis: 1000
-      redis-key-prefix: "rate_limit:analysis:"
+      timeout-millis: 2000   # 调大超时时间
 
     # 重试配置
     retry:

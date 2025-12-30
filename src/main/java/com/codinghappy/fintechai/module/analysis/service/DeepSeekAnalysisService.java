@@ -56,9 +56,9 @@ public class DeepSeekAnalysisService implements AnalysisService {
         }
 
         // 限流控制[citation:6]
-        if (!rateLimitService.tryAcquire()) {
-            throw new AnalysisException("系统繁忙，请稍后重试");
-        }
+//        if (!rateLimitService.tryAcquire()) {
+//            throw new AnalysisException("系统繁忙，请稍后重试");
+//        }
 
         try {
             // 使用重试机制调用DeepSeek API
@@ -236,15 +236,24 @@ public class DeepSeekAnalysisService implements AnalysisService {
     public List<AnalysisResult> batchAnalyze(List<AnalysisRequest> requests) {
         List<AnalysisResult> results = new ArrayList<>(requests.size());
 
-        requests.parallelStream().forEach(request -> {
+        // 使用普通的 for 循环，方便处理异常和休眠
+        for (AnalysisRequest request : requests) {
             try {
+                // --- 核心修复：手动降频 ---
+                // 每次分析前强制休息 1.5 秒，确保完全绕过本地限流和 DeepSeek 的频率限制
+                Thread.sleep(1500);
+
+                log.info("正在分析公司: {}", request.getCompanyName());
                 AnalysisResult result = analyzeCompany(request);
                 results.add(result);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
             } catch (Exception e) {
-                log.error("批量分析失败，公司: {}", request.getCompanyName(), e);
+                log.error("分析失败，公司: {}", request.getCompanyName(), e);
                 results.add(AnalysisResult.errorResult(e.getMessage()));
             }
-        });
+        }
 
         return results;
     }
