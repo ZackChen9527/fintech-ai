@@ -1,0 +1,323 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /api
+  compression:
+    enabled: true
+    mime-types: text/html,text/xml,text/plain,text/css,text/javascript,application/javascript,application/json
+    min-response-size: 1024
+
+spring:
+  application:
+    name: financial-lead-system
+
+  # 数据库配置
+  datasource:
+    url: jdbc:mysql://localhost:3306/finance_lead?useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=utf8&allowPublicKeyRetrieval=true
+    username: root
+    password: Woaishuijiao123
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      pool-name: FinanceLeadHikariPool
+
+  # JPA配置
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQL8Dialect
+        format_sql: false
+        jdbc:
+          batch_size: 20
+        order_inserts: true
+        order_updates: true
+    open-in-view: false
+
+  # Redis配置（修正格式）
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: Woaishuijiao123
+      database: 0
+      timeout: 5000ms
+      lettuce:
+        pool:
+          max-active: 20
+          max-idle: 10
+          min-idle: 5
+          max-wait: 3000ms
+        shutdown-timeout: 100ms
+
+  # Quartz配置
+  quartz:
+    job-store-type: memory
+    properties:
+      org:
+        quartz:
+          scheduler:
+            instanceName: FinanceLeadScheduler
+            instanceId: AUTO
+          threadPool:
+            threadCount: 10
+            threadPriority: 5
+            class: org.quartz.simpl.SimpleThreadPool
+          jobStore:
+            class: org.quartz.simpl.RAMJobStore
+            misfireThreshold: 60000
+
+  # Spring AI DeepSeek配置
+  ai:
+    openai:
+      api-key: ${DEEPSEEK_API_KEY:sk-1296b28ec3a14b74a574aa8fa450cc47}
+      base-url: https://api.deepseek.com
+      chat:
+        options:
+          model: deepseek-chat
+          temperature: 0.3
+          max-tokens: 1000
+          top-p: 0.9
+          frequency-penalty: 0.1
+          presence-penalty: 0.1
+
+  # 异步任务配置
+  task:
+    execution:
+      pool:
+        core-size: 10
+        max-size: 50
+        queue-capacity: 100
+        keep-alive: 60s
+        thread-name-prefix: finance-task-
+      shutdown:
+        await-termination: true
+        await-termination-period: 60s
+
+  # Jackson配置
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+    serialization:
+      write-dates-as-timestamps: false
+      indent-output: false
+    deserialization:
+      fail-on-unknown-properties: false
+
+# 自定义配置
+finance:
+  # 系统配置
+  system:
+    version: 1.0.0
+    name: 金融精准获客系统
+
+  # 数据抓取模块配置
+  crawler:
+    linkedin:
+      enabled: true
+      batch-size: 10
+      max-retries: 3
+      delay-seconds: 5
+      request-timeout: 30000
+      max-companies-per-search: 20
+      user-agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+      # 抓取字段配置
+      fields:
+        enabled:
+          - company-name
+          - description
+          - website
+          - location
+          - industry
+          - company-size
+          - employee-count
+          - founded-year
+          - specialities
+
+      # 定时任务配置
+      schedule:
+        enabled: true
+        cron: "0 0 3 * * ?"  # 每天凌晨3点执行
+        keywords: "跨境支付,海外借贷,金融科技,国际结算,跨境融资"
+        limit-per-keyword: 5
+
+  # 分析模块配置
+  analysis:
+    # 基础配置
+    cache:
+      enabled: true
+      expire-minutes: 30
+      max-size: 1000
+
+    # 限流配置
+    rate-limit:
+      tokens-per-second: 5
+      burst-capacity: 10
+      timeout-millis: 1000
+      redis-key-prefix: "rate_limit:analysis:"
+
+    # 重试配置
+    retry:
+      max-attempts: 3
+      initial-interval: 1000
+      multiplier: 2.0
+      max-interval: 10000
+
+    # DeepSeek API配置
+    deepseek:
+      prompt-template: |
+        请分析以下公司简介，并回答：
+        1. 该公司是否属于以下业务类型（可多选）：
+           - 跨境支付：提供国际间的货币转移和支付服务
+           - 海外借贷：向海外客户提供贷款或融资服务
+           - 其他金融：不属于以上两类但提供金融服务
+        2. 基于公司业务和金融需求，给出付费意愿评分（1-10分，10分最高）
+        3. 分析置信度（0-1，1为最可信）
+        
+        请严格按以下JSON格式返回，不要添加任何额外文本：
+        {
+          "business_types": ["业务类型"],
+          "payment_willingness_score": 数字,
+          "confidence": 小数,
+          "reason": "分析理由"
+        }
+        
+        公司简介：
+        {description}
+
+      fallback:
+        enabled: true
+        min-confidence: 0.6
+
+    # 分析任务配置
+    task:
+      enabled: true
+      batch-size: 20
+      max-retries: 3
+      delay-seconds: 2
+      max-companies: 100
+      score-threshold: 7
+      cleanup-days: 30
+
+      # 定时任务配置
+      schedule:
+        enabled: true
+        cron: "0 0 4 * * ?"            # 每天凌晨4点执行
+        reanalyze-cron: "0 0 5 * * ?"  # 每天凌晨5点重新分析低质量结果
+        cleanup-cron: "0 0 6 * * ?"    # 每天凌晨6点清理旧结果
+
+      # 报告配置
+      report:
+        enabled: true
+        email-recipients: ""
+        storage-path: "logs/reports"
+
+    # 业务策略配置
+    strategy:
+      cross-border-payment:
+        keywords:
+          - "跨境支付"
+          - "国际支付"
+          - "跨境结算"
+          - "外汇支付"
+          - "跨境收款"
+          - "国际汇款"
+          - "货币兑换"
+          - "外汇交易"
+        weight: 1.2
+
+      overseas-loan:
+        keywords:
+          - "海外借贷"
+          - "国际贷款"
+          - "跨境融资"
+          - "海外融资"
+          - "境外贷款"
+          - "国际信贷"
+          - "跨境借贷"
+          - "海外债权"
+        weight: 1.0
+
+  # 任务调度模块配置
+  scheduler:
+    quartz:
+      auto-startup: true
+      startup-delay: 10
+      overwrite-existing-jobs: true
+      wait-for-jobs-to-complete-on-shutdown: true
+
+    # 定时任务配置
+    jobs:
+      lead-generation:
+        enabled: true
+        cron: "0 0 2 * * ?"        # 每天凌晨2点执行
+        description: "潜在客户生成任务"
+
+      analysis-batch:
+        enabled: true
+        cron: "0 */30 * * * ?"     # 每30分钟执行一次
+        description: "批量分析任务"
+
+    # 线程池配置
+    thread-pool:
+      core-size: 5
+      max-size: 20
+      queue-capacity: 100
+      keep-alive-seconds: 60
+
+# 日志配置
+logging:
+  level:
+    com.finance.lead: INFO
+    org.springframework.web: INFO
+    org.springframework.ai: INFO
+    org.quartz: WARN
+    org.hibernate: WARN
+    org.hibernate.SQL: WARN
+    org.hibernate.type.descriptor.sql.BasicBinder: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{50} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} [%file:%line] - %msg%n"
+  file:
+    name: logs/finance-lead.log
+    max-history: 30
+    max-size: 100MB
+    total-size-cap: 1GB
+  logback:
+    rollingpolicy:
+      max-file-size: 100MB
+      clean-history-on-start: false
+
+# 健康检查配置
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+      base-path: /manage
+  endpoint:
+    health:
+      show-details: when_authorized
+      probes:
+        enabled: true
+  info:
+    env:
+      enabled: true
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+    enable:
+      jvm: true
+      system: true
+      logback: true

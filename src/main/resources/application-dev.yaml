@@ -1,0 +1,68 @@
+# 开发环境配置
+server:
+  port: 8081
+
+spring:
+  # 数据库配置（开发环境）
+  datasource:
+    url: jdbc:mysql://localhost:3306/finance_lead_dev?useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=utf8&allowPublicKeyRetrieval=true
+    username: dev_user
+    password: dev_password123
+
+  # JPA配置（开发环境显示SQL）
+  jpa:
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        use_sql_comments: true
+
+  # Redis配置（开发环境）
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      timeout: 2000ms
+
+  # 配置热部署
+  devtools:
+    restart:
+      enabled: true
+    livereload:
+      enabled: true
+
+  # 开发环境使用H2控制台
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+# 开发环境DeepSeek配置
+finance:
+  analysis:
+    deepseek:
+    # 开发环境可以启用模拟模式
+    # mock-mode: true
+    # mock-delay-ms: 500
+
+    rate-limit:
+      # 开发环境放宽限流
+      tokens-per-second: 10
+      burst-capacity: 20
+
+  crawler:
+    linkedin:
+      # 开发环境减少抓取数量
+      max-companies-per-search: 5
+      delay-seconds: 3
+
+# 开发环境日志配置
+logging:
+  level:
+    com.finance.lead: DEBUG
+    org.springframework.web: DEBUG
+    org.springframework.transaction: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+  file:
+    name: logs/finance-lead-dev.log
