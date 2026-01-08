@@ -1,268 +1,193 @@
-package com.codinghappy.fintechai.module.analysis.service;
+package com.codinghappy.fintechai.module.analysis.service; // ⚠️ 确认你的包名
 
-import com.codinghappy.fintechai.module.analysis.dto.AnalysisRequest;
-import com.codinghappy.fintechai.module.analysis.dto.AnalysisResult;
-import com.codinghappy.fintechai.module.analysis.dto.BusinessType;
-import com.codinghappy.fintechai.module.analysis.exception.AnalysisException;
-import com.codinghappy.fintechai.module.analysis.retry.RetryTemplate;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-
-import lombok.RequiredArgsConstructor;
+import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONArray;
+import com.alibaba.fastjson.JSONObject;
+import com.codinghappy.fintechai.repository.AnalysisResultRepository;
+import com.codinghappy.fintechai.repository.entity.AnalysisResultEntity;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
 
-import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
-public class DeepSeekAnalysisService implements AnalysisService {
+public class DeepSeekAnalysisService {
 
-    private final ChatClient chatClient;
-    private final RateLimitService rateLimitService;
-    @Qualifier("customRetryTemplate")
-    private final RetryTemplate retryTemplate;
-    private final ObjectMapper objectMapper;
+    @Autowired
+    private AnalysisResultRepository analysisResultRepository;
 
-    @Value("${finance.analysis.deepseek.prompt-template}")
-    private String promptTemplate;
+    @Autowired
+    private RestTemplate restTemplate;
 
-    // 缓存已分析的公司简介，减少API调用[citation:10]
-    private final Map<String, AnalysisResult> analysisCache =
-            new ConcurrentHashMap<>(1024);
+    @Value("${spring.ai.openai.api-key}")
+    private String apiKey;
 
-    private static final Set<String> BUSINESS_KEYWORDS = Set.of(
-            "跨境支付", "国际支付", "跨境结算", "外汇支付",
-            "海外借贷", "国际贷款", "跨境融资", "海外融资"
-    );
+    @Value("${spring.ai.openai.base-url}")
+    private String apiUrl;
 
-    /**
-     * 分析公司简介
-     */
-    @Override
-    public AnalysisResult analyzeCompany(AnalysisRequest request) {
-        String cacheKey = generateCacheKey(request.getDescription());
+    public AnalysisResultEntity analyzeCompany(Long companyId, String companyName, String description) {
+        log.info(">>> 开始分析公司: {} (ID: {})", companyName, companyId);
+        long startTime = System.currentTimeMillis();
 
-        // 检查缓存
-        AnalysisResult cachedResult = analysisCache.get(cacheKey);
-        if (cachedResult != null) {
-            log.debug("返回缓存的分析结果，公司: {}", request.getCompanyName());
-            return cachedResult;
-        }
-
-        // 限流控制[citation:6]
-//        if (!rateLimitService.tryAcquire()) {
-//            throw new AnalysisException("系统繁忙，请稍后重试");
-//        }
+        AnalysisResultEntity.AnalysisResultEntityBuilder resultBuilder = AnalysisResultEntity.builder()
+                .companyId(companyId)
+                .analysisModel("deepseek-chat-v3")
+                .version(3)
+                .analysisTime(LocalDateTime.now());
 
         try {
-            // 使用重试机制调用DeepSeek API
-            AnalysisResult result = retryTemplate.executeWithRetry(() ->
-                    callDeepSeekApi(request)
-            );
+            String prompt = buildCommercialSpyPrompt(companyName, description);
+            String rawResponse = callDeepSeekApi(prompt);
+            long duration = System.currentTimeMillis() - startTime;
 
-            // 缓存结果
-            analysisCache.put(cacheKey, result);
-            return result;
+            // 🔥 核心修复：解析 OpenAI 格式的响应
+            JSONObject aiData = parseAiResponse(rawResponse);
+
+            if (aiData == null) {
+                // 如果解析失败，抛异常，让外层重试或记录
+                throw new RuntimeException("无法从AI响应中提取有效JSON");
+            }
+
+            // 组装成好看的报告
+            String commercialReport = generateCommercialReport(aiData);
+
+            AnalysisResultEntity entity = resultBuilder
+                    .success(true)
+                    .rawResponse(rawResponse)
+                    .processingTimeMs((double) duration)
+                    .analysisReason(commercialReport) // 这里现在肯定有值了！
+                    .businessTypes(aiData.getString("business_category"))
+                    .paymentWillingnessScore(aiData.getInteger("score"))
+                    .confidence(aiData.getDouble("confidence"))
+                    .build();
+
+            return analysisResultRepository.save(entity);
 
         } catch (Exception e) {
-            log.error("分析公司失败: {}, 错误: {}", request.getCompanyName(), e.getMessage());
-
-            // 降级方案：使用关键词匹配
-            return fallbackAnalysis(request.getDescription());
+            log.error(">>> 分析失败: {}", companyName, e);
+            AnalysisResultEntity errorEntity = resultBuilder
+                    .success(false)
+                    .errorMessage(e.getMessage())
+                    .processingTimeMs((double) (System.currentTimeMillis() - startTime))
+                    .build();
+            analysisResultRepository.save(errorEntity);
+            throw new RuntimeException("分析失败: " + e.getMessage());
         }
     }
 
-    /**
-     * 调用DeepSeek API[citation:4][citation:9]
-     */
-    private AnalysisResult callDeepSeekApi(AnalysisRequest request) {
-        try {
-            String prompt = promptTemplate.replace("{description}",
-                    request.getDescription());
-
-            String response = chatClient.prompt()
-                    .user(prompt)
-                    .call()
-                    .content();
-
-            log.debug("DeepSeek API响应: {}", response);
-
-            return parseApiResponse(response, request.getDescription());
-
-        } catch (Exception e) {
-            throw new AnalysisException("DeepSeek API调用失败: " + e.getMessage(), e);
-        }
-    }
-
-    /**
-     * 解析DeepSeek API响应
-     */
-    private AnalysisResult parseApiResponse(String response, String description) {
-        try {
-            // 提取JSON部分
-            String jsonStr = extractJsonFromResponse(response);
-            JsonNode jsonNode = objectMapper.readTree(jsonStr);
-
-            AnalysisResult result = new AnalysisResult();
-
-            // 解析业务类型
-            List<BusinessType> businessTypes = new ArrayList<>();
-            JsonNode typesNode = jsonNode.get("business_types");
-            if (typesNode != null && typesNode.isArray()) {
-                for (JsonNode typeNode : typesNode) {
-                    String type = typeNode.asText();
-                    if ("跨境支付".equals(type)) {
-                        businessTypes.add(BusinessType.CROSS_BORDER_PAYMENT);
-                    } else if ("海外借贷".equals(type)) {
-                        businessTypes.add(BusinessType.OVERSEAS_LOAN);
-                    }
-                }
-            }
-            result.setBusinessTypes(businessTypes);
-
-            // 解析评分
-            JsonNode scoreNode = jsonNode.get("payment_willingness_score");
-            if (scoreNode != null) {
-                result.setPaymentWillingnessScore(scoreNode.asInt());
-            } else {
-                result.setPaymentWillingnessScore(5); // 默认值
-            }
-
-            // 解析置信度
-            JsonNode confidenceNode = jsonNode.get("confidence");
-            if (confidenceNode != null) {
-                result.setConfidence(confidenceNode.asDouble());
-            }
-
-            // 解析理由
-            JsonNode reasonNode = jsonNode.get("reason");
-            if (reasonNode != null) {
-                result.setAnalysisReason(reasonNode.asText());
-            }
-
-            result.setRawResponse(response);
-            result.setSuccess(true);
-
-            return result;
-
-        } catch (Exception e) {
-            log.warn("解析API响应失败，使用降级分析，响应: {}", response);
-            return fallbackAnalysis(description);
-        }
-    }
-
-    /**
-     * 从响应中提取JSON
-     */
-    private String extractJsonFromResponse(String response) {
-        // 查找JSON开始和结束位置
-        int start = response.indexOf('{');
-        int end = response.lastIndexOf('}');
-
-        if (start >= 0 && end > start) {
-            return response.substring(start, end + 1);
-        }
-
-        return response;
-    }
-
-    /**
-     * 降级分析：基于关键词的简单分析
-     */
-    private AnalysisResult fallbackAnalysis(String description) {
-        AnalysisResult result = new AnalysisResult();
-        List<BusinessType> businessTypes = new ArrayList<>();
-
-        // 关键词匹配
-        String lowerDesc = description.toLowerCase();
-        for (String keyword : BUSINESS_KEYWORDS) {
-            if (lowerDesc.contains(keyword.toLowerCase())) {
-                if (keyword.contains("支付")) {
-                    businessTypes.add(BusinessType.CROSS_BORDER_PAYMENT);
-                } else if (keyword.contains("借贷") || keyword.contains("贷款")) {
-                    businessTypes.add(BusinessType.OVERSEAS_LOAN);
-                }
-            }
-        }
-
-        result.setBusinessTypes(businessTypes);
-        result.setPaymentWillingnessScore(calculateFallbackScore(description));
-        result.setConfidence(0.6);
-        result.setAnalysisReason("基于关键词匹配的降级分析");
-        result.setSuccess(true);
-
-        return result;
-    }
-
-    /**
-     * 计算降级评分
-     */
-    private int calculateFallbackScore(String description) {
-        int score = 5; // 基础分
-
-        // 根据关键词数量调整分数
-        long keywordCount = BUSINESS_KEYWORDS.stream()
-                .filter(keyword -> description.toLowerCase()
-                        .contains(keyword.toLowerCase()))
-                .count();
-
-        score += Math.min(keywordCount, 3); // 每匹配一个关键词加1分，最多加3分
-
-        // 根据描述长度调整
-        if (description.length() > 200) {
-            score += 1; // 详细描述加1分
-        }
-
-        return Math.min(score, 10); // 确保不超过10分
-    }
-
-    /**
-     * 生成缓存键
-     */
-    private String generateCacheKey(String description) {
-        return Integer.toHexString(description.hashCode());
-    }
-
-    /**
-     * 批量分析
-     */
-    @Override
-    public List<AnalysisResult> batchAnalyze(List<AnalysisRequest> requests) {
-        List<AnalysisResult> results = new ArrayList<>(requests.size());
-
-        // 使用普通的 for 循环，方便处理异常和休眠
-        for (AnalysisRequest request : requests) {
+    public List<AnalysisResultEntity> batchAnalyze(List<com.codinghappy.fintechai.module.analysis.dto.AnalysisRequest> requests) {
+        List<AnalysisResultEntity> results = new ArrayList<>();
+        for (var req : requests) {
             try {
-                // --- 核心修复：手动降频 ---
-                // 每次分析前强制休息 1.5 秒，确保完全绕过本地限流和 DeepSeek 的频率限制
-                Thread.sleep(1500);
-
-                log.info("正在分析公司: {}", request.getCompanyName());
-                AnalysisResult result = analyzeCompany(request);
-                results.add(result);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            } catch (Exception e) {
-                log.error("分析失败，公司: {}", request.getCompanyName(), e);
-                results.add(AnalysisResult.errorResult(e.getMessage()));
-            }
+                results.add(analyzeCompany(req.getCompanyId(), req.getCompanyName(), req.getDescription()));
+            } catch (Exception e) { /* ignore */ }
         }
-
         return results;
     }
 
-    /**
-     * 清空缓存
-     */
-    public void clearCache() {
-        analysisCache.clear();
-        log.info("已清空分析缓存");
+    // --- 私有辅助方法 ---
+
+    private String buildCommercialSpyPrompt(String name, String desc) {
+        return "你是一名拥有10年经验的Fintech行业销售总监。请分析以下目标公司的信息，为我挖掘销售线索。\n\n" +
+                "【目标公司】: " + name + "\n" +
+                "【公司简介】: " + desc + "\n\n" +
+                "请务必严格按照以下 JSON 格式输出结果（不要输出 markdown 代码块，只输出纯文本 JSON）：\n" +
+                "{\n" +
+                "  \"business_category\": \"用3-5个字精准定义其业务(如:跨境支付/Web3钱包)\",\n" +
+                "  \"pain_points\": [\"痛点1: 描述具体的技术或合规难题\", \"痛点2\", \"痛点3\"],\n" +
+                "  \"score\": 1-10的整数(代表付费意愿),\n" +
+                "  \"confidence\": 0.0-1.0(代表你的判断置信度),\n" +
+                "  \"sales_hook\": \"一句为销售量身定制的破冰开场白(中文)\",\n" +
+                "  \"value_summary\": \"简述为什么这家公司值得跟进(50字以内)\"\n" +
+                "}";
+    }
+
+    private String generateCommercialReport(JSONObject data) {
+        StringBuilder sb = new StringBuilder();
+        // 增加空值判断，防止 NullPointerException
+        String category = data.getString("business_category");
+        sb.append("【业务本质】: ").append(category != null ? category : "未识别").append("\n\n");
+
+        sb.append("【核心痛点预测】:\n");
+        JSONArray painPoints = data.getJSONArray("pain_points");
+        if (painPoints != null) {
+            for (int i = 0; i < painPoints.size(); i++) {
+                sb.append(i + 1).append(". ").append(painPoints.getString(i)).append("\n");
+            }
+        }
+
+        sb.append("\n【销售敲门砖】:\n\"").append(data.getString("sales_hook")).append("\"\n\n");
+        sb.append("【深度价值评估】:\n").append(data.getString("value_summary"));
+        return sb.toString();
+    }
+
+    // 🔥 修复后的解析逻辑
+    private JSONObject parseAiResponse(String rawResponse) {
+        try {
+            JSONObject root = JSON.parseObject(rawResponse);
+
+            // 优先检查 OpenAI 格式 (choices -> message -> content)
+            if (root.containsKey("choices")) {
+                JSONArray choices = root.getJSONArray("choices");
+                if (!choices.isEmpty()) {
+                    String content = choices.getJSONObject(0)
+                            .getJSONObject("message")
+                            .getString("content");
+                    return parseCleanJson(content);
+                }
+            }
+
+            // 否则尝试直接解析 root (防止 DeepSeek 改格式)
+            return root;
+
+        } catch (Exception e) {
+            // 最后的兜底：把它当纯文本处理
+            return parseCleanJson(rawResponse);
+        }
+    }
+
+    private JSONObject parseCleanJson(String content) {
+        if (content == null) return null;
+        try {
+            // 去掉 markdown 的 ```json 和 ``` 包裹
+            String clean = content.replaceAll("```json", "")
+                    .replaceAll("```", "")
+                    .trim();
+            return JSON.parseObject(clean);
+        } catch (Exception e) {
+            log.error("JSON清洗失败，内容: {}", content);
+            return null;
+        }
+    }
+
+    private String callDeepSeekApi(String prompt) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("Authorization", "Bearer " + apiKey);
+
+        Map<String, Object> message = new HashMap<>();
+        message.put("role", "user");
+        message.put("content", prompt);
+
+        Map<String, Object> body = new HashMap<>();
+        body.put("model", "deepseek-chat");
+        body.put("messages", new Object[]{message});
+        body.put("temperature", 0.7);
+
+        HttpEntity<Map<String, Object>> request = new HttpEntity<>(body, headers);
+        ResponseEntity<String> response = restTemplate.postForEntity(apiUrl, request, String.class);
+        return response.getBody();
     }
 }

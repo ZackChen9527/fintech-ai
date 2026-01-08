@@ -76,8 +76,8 @@ spring:
   # Spring AI DeepSeek配置
   ai:
     openai:
-      api-key: ${DEEPSEEK_API_KEY:sk-1296b***********************cc47}
-      base-url: https://api.deepseek.com
+      api-key: ${DEEPSEEK_API_KEY:sk-1296b28ec3a14b74a574aa8fa450cc47}
+      base-url: https://api.deepseek.com/chat/completions
       chat:
         options:
           model: deepseek-chat

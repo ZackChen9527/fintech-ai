@@ -1,6 +1,5 @@
 package com.codinghappy.fintechai.repository;
 
-
 import com.codinghappy.fintechai.repository.entity.CompanyEntity;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -17,6 +16,9 @@ import java.util.Optional;
 public interface CompanyRepository extends JpaRepository<CompanyEntity, Long> {
 
     Optional<CompanyEntity> findByName(String name);
+
+    // ✅ 新增：根据 LinkedIn URL 精确查找（用于爬虫去重）
+    Optional<CompanyEntity> findByLinkedinUrl(String linkedinUrl);
 
     List<CompanyEntity> findByIndustry(String industry);
 
